@@ -16,6 +16,14 @@ struct ebpf_offload {
     size_t   chunk_size;
     size_t   chunks;
 
+    /*
+     * The NVMe device can either be in raw block io format or it can be a file
+     * system. In raw mode, we copy the file to address 0x0 of the NVMe device
+     * and then p2pdma it. In filesystem mode, we don't need to copy the file,
+     * since it is already there.
+     */
+    bool use_raw_io;
+
     size_t prog_len_offset;
     size_t mem_len_offset;
     size_t prog_offset;
@@ -27,6 +35,7 @@ struct ebpf_offload {
 };
 
 struct ebpf_offload *ebpf_create();
+void ebpf_use_raw_io(struct ebpf_offload *eo, bool use_raw_io);
 int ebpf_set_nvme(struct ebpf_offload *eo, const char *fname);
 int ebpf_set_p2pmem(struct ebpf_offload *eo, const char *fname);
 int ebpf_set_ebpf(struct ebpf_offload *eo, const char *fname, size_t size);

@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <stdbool.h>
+
 #include "ebpf-offload.h"
 
 #define EBPF_START                0x1
@@ -36,6 +38,9 @@ static int ebpf_execute(struct ebpf_offload *eo);
 struct ebpf_offload *ebpf_create()
 {
     struct ebpf_offload *eo = calloc(1, sizeof(*eo));
+
+    eo->use_raw_io = false;
+
     eo->prog_len_offset     = 0x0;
     eo->mem_len_offset      = 0x4;
     eo->prog_offset         = 0x1000;
@@ -45,6 +50,11 @@ struct ebpf_offload *ebpf_create()
     eo->regs_offset         = 0x200008;
     eo->mem_offset          = 0x800000;
     return eo;
+}
+
+void ebpf_use_raw_io(struct ebpf_offload *eo, bool use_raw_io)
+{
+    eo->use_raw_io = use_raw_io;
 }
 
 int ebpf_set_nvme(struct ebpf_offload *eo, const char *fname)
@@ -79,7 +89,7 @@ int ebpf_set_prog(struct ebpf_offload *eo, const char *fname)
 int ebpf_set_data(struct ebpf_offload *eo, const char *fname)
 {
     set_filename(data);
-    open_file(data, O_RDONLY);
+    open_file(data, O_RDONLY | O_DIRECT);
     return 0;
 }
 
@@ -95,7 +105,7 @@ void ebpf_set_chunk_size(struct ebpf_offload *eo, size_t chunk_size)
 
 int ebpf_init(struct ebpf_offload *eo)
 {
-    if (eo->nvme_fd == 0) {
+    if (eo->nvme_fd == 0 && eo->use_raw_io) {
         fprintf(stderr, "NVMe device not initialized.");
         return 1;
     }
@@ -119,6 +129,12 @@ int ebpf_init(struct ebpf_offload *eo)
         fprintf(stderr, "Chunk size not initialized.");
         return 1;
     }
+
+    if (!eo->use_raw_io && eo->nvme_fd) {
+        fprintf(stderr, "[libebpf-offload] WARNING: In filesystem mode, you should not "
+                "specify the NVMe device\n");
+    }
+
     eo->p2pmem_size = eo->chunk_size * eo->chunks;
     eo->p2pmem_buffer = mmap(NULL, eo->p2pmem_size, PROT_READ | PROT_WRITE,
             MAP_SHARED, eo->p2pmem_fd, 0);
@@ -176,7 +192,12 @@ static void ebpf_load_program(struct ebpf_offload *eo)
 
 static void ebpf_load_data(struct ebpf_offload *eo, int offset)
 {
-    ssize_t count = pread(eo->nvme_fd, eo->p2pmem_buffer, eo->chunk_size, offset);
+    ssize_t count;
+    if (eo->use_raw_io)
+        count = pread(eo->nvme_fd, eo->p2pmem_buffer, eo->chunk_size, offset);
+    else
+        count = pread(eo->data_fd, eo->p2pmem_buffer, eo->chunk_size, offset);
+
     if (count != eo->chunk_size) {
         if (count == -1) {
             perror("pread");
@@ -208,7 +229,7 @@ static int ebpf_execute(struct ebpf_offload *eo)
 
 void ebpf_run(struct ebpf_offload *eo, int *result)
 {
-    if (eo->data_fd) {
+    if (eo->data_fd && eo->use_raw_io) {
         ebpf_write_data(eo);
     }
     ebpf_load_program(eo);
