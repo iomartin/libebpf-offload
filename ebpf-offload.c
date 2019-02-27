@@ -16,19 +16,21 @@
 #define EBPF_NOT_READY            0x0
 #define EBPF_READY                0x1
 
-#define set_filename(name) do { \
-        int len = strlen(fname) + 1; \
-        eo->name ## _filename = malloc(len); \
-        strncpy(eo->name ## _filename, fname, len) ; \
-    } while(0);
+static void set_filename(const char *fname, char **ptr)
+{
+    int len = strlen(fname) + 1;
+    *ptr = malloc(len);
+    strcpy(*ptr, fname);
+}
 
-#define open_file(name, flags) do { \
-        eo->name ## _fd = open(eo->name ## _filename, flags); \
-        if (eo->name ## _fd < 0) { \
-            perror("open"); \
-            return 1; \
-        } \
-    } while(0);
+static void open_file(int *fildes, char *name, int flags)
+{
+    *fildes = open(name, flags);
+    if (*fildes < 0) {
+        perror("open");
+        exit(1);
+    }
+}
 
 static void ebpf_load_program(struct ebpf_offload *eo);
 static void ebpf_load_data(struct ebpf_offload *eo, int offset);
@@ -59,37 +61,32 @@ void ebpf_use_raw_io(struct ebpf_offload *eo, bool use_raw_io)
 
 int ebpf_set_nvme(struct ebpf_offload *eo, const char *fname)
 {
-    set_filename(nvme);
-    open_file(nvme, O_TRUNC | O_RDWR | O_DIRECT);
+    set_filename(fname, &eo->nvme_filename);
     return 0;
 }
 
 int ebpf_set_p2pmem(struct ebpf_offload *eo, const char *fname)
 {
-    set_filename(p2pmem);
-    open_file(p2pmem, O_TRUNC | O_RDWR);
+    set_filename(fname, &eo->p2pmem_filename);
     return 0;
 }
 
 int ebpf_set_ebpf(struct ebpf_offload *eo, const char *fname, size_t size)
 {
-    set_filename(ebpf);
-    open_file(ebpf, O_TRUNC | O_RDWR);
+    set_filename(fname, &eo->ebpf_filename);
     eo->ebpf_size = size;
     return 0;
 }
 
 int ebpf_set_prog(struct ebpf_offload *eo, const char *fname)
 {
-    set_filename(prog);
-    open_file(prog, O_RDONLY);
+    set_filename(fname, &eo->prog_filename);
     return 0;
 }
 
 int ebpf_set_data(struct ebpf_offload *eo, const char *fname)
 {
-    set_filename(data);
-    open_file(data, O_RDONLY | O_DIRECT);
+    set_filename(fname, &eo->data_filename);
     return 0;
 }
 
@@ -105,6 +102,22 @@ void ebpf_set_chunk_size(struct ebpf_offload *eo, size_t chunk_size)
 
 int ebpf_init(struct ebpf_offload *eo)
 {
+    if (eo->nvme_filename && eo->use_raw_io) {
+        open_file(&eo->nvme_fd, eo->nvme_filename, O_TRUNC | O_RDWR | O_DIRECT);
+    }
+    if (eo->p2pmem_filename) {
+        open_file(&eo->p2pmem_fd, eo->p2pmem_filename, O_TRUNC | O_RDWR);
+    }
+    if (eo->ebpf_filename) {
+        open_file(&eo->ebpf_fd, eo->ebpf_filename, O_TRUNC | O_RDWR);
+    }
+    if (eo->prog_filename) {
+        open_file(&eo->prog_fd, eo->prog_filename, O_RDONLY);
+    }
+    if (eo->data_filename) {
+        open_file(&eo->data_fd, eo->data_filename, O_RDONLY | O_DIRECT);
+    }
+
     if (eo->nvme_fd == 0 && eo->use_raw_io) {
         fprintf(stderr, "NVMe device not initialized.");
         return 1;
@@ -128,11 +141,6 @@ int ebpf_init(struct ebpf_offload *eo)
     if (eo->chunk_size == 0) {
         fprintf(stderr, "Chunk size not initialized.");
         return 1;
-    }
-
-    if (!eo->use_raw_io && eo->nvme_fd) {
-        fprintf(stderr, "[libebpf-offload] WARNING: In filesystem mode, you should not "
-                "specify the NVMe device\n");
     }
 
     eo->p2pmem_size = eo->chunk_size * eo->chunks;
