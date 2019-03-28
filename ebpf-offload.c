@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <stdbool.h>
 
 #include "ebpf-offload.h"
@@ -32,25 +33,19 @@ static void open_file(int *fildes, char *name, int flags)
     }
 }
 
-static void ebpf_load_program(struct ebpf_offload *eo);
-static void ebpf_load_data(struct ebpf_offload *eo, int offset);
-static void ebpf_write_data(struct ebpf_offload *eo);
-static int ebpf_execute(struct ebpf_offload *eo);
-
 struct ebpf_offload *ebpf_create()
 {
     struct ebpf_offload *eo = calloc(1, sizeof(*eo));
 
     eo->use_raw_io = false;
 
-    eo->prog_len_offset     = 0x0;
-    eo->mem_len_offset      = 0x4;
-    eo->prog_offset         = 0x1000;
-    eo->control_prog_offset = 0x100000;
-    eo->ret_offset          = 0x200000;
-    eo->ready_offset        = 0x200004;
-    eo->regs_offset         = 0x200008;
-    eo->mem_offset          = 0x800000;
+    eo->prog_len_offset     = EBPF_TEXT_LEN_OFFSET;
+    eo->mem_len_offset      = EBPF_MEM_LEN_OFFSET;
+    eo->prog_offset         = EBPF_TEXT_OFFSET;
+    eo->ret_offset          = EBPF_RET_OFFSET;
+    eo->ready_offset        = EBPF_READY_OFFSET;
+    eo->regs_offset         = EBPF_REGS_OFFSET;
+    eo->mem_offset          = EBPF_MEM_OFFSET;
     return eo;
 }
 
@@ -159,74 +154,44 @@ int ebpf_init(struct ebpf_offload *eo)
     return 0;
 }
 
-static void ebpf_write_data(struct ebpf_offload *eo)
+int ebpf_send_command(struct ebpf_offload *eo, char opcode, uint32_t length, uint64_t addr)
 {
-    void *buf = mmap(NULL, eo->p2pmem_size, PROT_READ, MAP_SHARED, eo->data_fd, 0);
-    if (buf == MAP_FAILED) {
-        perror("mmap");
-        exit(EXIT_FAILURE);
-    }
+    struct ebpf_command *cmd = malloc(sizeof(struct ebpf_command));
+    cmd->opcode = opcode;
+    cmd->length = length;
+    cmd->addr = addr;
 
-    ssize_t count = write(eo->nvme_fd, buf, eo->p2pmem_size);
-    if (count != eo->p2pmem_size) {
-        if (count == -1) {
-            perror("write");
-        }
-        fprintf(stderr, "Copying %s to %s failed. Wanted: %lu bytes. Transferred: %lu\n",
-                eo->data_filename, eo->nvme_filename, eo->p2pmem_size, count);
-        exit(EXIT_FAILURE);
-    }
-    munmap(buf, eo->p2pmem_size);
+    int res = ioctl(eo->ebpf_fd, 0x0, cmd);
+    free(cmd);
+    return res;
 }
 
-static void ebpf_load_program(struct ebpf_offload *eo)
+static void ebpf_dma_program(struct ebpf_offload *eo)
 {
     /* Get program size */
-    int size = lseek(eo->prog_fd, 0, SEEK_END);
+    int prog_size = lseek(eo->prog_fd, 0, SEEK_END);;
     lseek(eo->prog_fd, 0, SEEK_SET);
 
-    int* prog_len_ptr = (int32_t*) (eo->ebpf_buffer + eo->prog_len_offset);
-    void *prog_ptr = eo->ebpf_buffer + eo->prog_offset;
-
-    /* Write to device */
-    *prog_len_ptr = size;
-    size_t bytes = read(eo->prog_fd, prog_ptr, size);
-    if (bytes != size) {
-        fprintf(stderr, "Copying %s to %s failed. Program length: %d. Bytes transferred: %lu.\n",
-                eo->prog_filename, eo->ebpf_filename, size, bytes);
-        exit(EXIT_FAILURE);
-    }
+    void *prog_addr = mmap(NULL, prog_size, PROT_READ, MAP_SHARED, eo->prog_fd, 0);
+    ebpf_send_command(eo, EBPF_OFFLOAD_OPCODE_DMA_TEXT, prog_size, (uint64_t) prog_addr);
+    munmap(prog_addr, prog_size);
 }
 
-static void ebpf_load_data(struct ebpf_offload *eo, int offset)
+static void ebpf_dma_data(struct ebpf_offload *eo)
 {
-    ssize_t count;
-    if (eo->use_raw_io)
-        count = pread(eo->nvme_fd, eo->p2pmem_buffer, eo->chunk_size, offset);
-    else
-        count = pread(eo->data_fd, eo->p2pmem_buffer, eo->chunk_size, offset);
-
-    if (count != eo->chunk_size) {
-        if (count == -1) {
-            perror("pread");
-        }
-        fprintf(stderr, "DMAing to %s failed. Chunk size: %lu. Bytes transferred: %lu",
-                eo->nvme_filename, eo->chunk_size, count);
-        exit(EXIT_FAILURE);
-    }
-
-    ssize_t* mem_len_ptr = (ssize_t*) (eo->ebpf_buffer + eo->mem_len_offset);
-    *mem_len_ptr = count;
+    int data_size = eo->chunks * eo->chunk_size;
+    void *data_addr = mmap(NULL, data_size, PROT_READ, MAP_SHARED, eo->data_fd, 0);
+    ebpf_send_command(eo, EBPF_OFFLOAD_OPCODE_DMA_DATA, data_size, (uint64_t) data_addr);
+    munmap(data_addr, data_size);
 }
 
-static int ebpf_execute(struct ebpf_offload *eo)
+static int ebpf_execute(struct ebpf_offload *eo, uint64_t offset)
 {
-    int *control_prog_ptr = (int32_t*) (eo->ebpf_buffer + eo->control_prog_offset);
     volatile int *ready_ptr = (int32_t*) (eo->ebpf_buffer + eo->ready_offset);
     volatile int *ret_ptr = (int32_t*) (eo->ebpf_buffer + eo->ret_offset);
 
     *ready_ptr = EBPF_NOT_READY;
-    *control_prog_ptr = EBPF_START;
+    ebpf_send_command(eo, EBPF_OFFLOAD_OPCODE_RUN_PROG, 0, offset);
 
     /* Wait until eBPF program finishes */
     while (!*ready_ptr);
@@ -234,18 +199,23 @@ static int ebpf_execute(struct ebpf_offload *eo)
     return *ret_ptr;
 }
 
+/* Write registers to offset 'offset' (starting from the beginning of the ebpf_buffer */
+void ebpf_get_registers(struct ebpf_offload *eo, uint64_t addr)
+{
+    ebpf_send_command(eo, EBPF_OFFLOAD_OPCODE_GET_REGS, EBPF_NREGS * sizeof(uint64_t), addr);
+}
 
 void ebpf_run(struct ebpf_offload *eo, int *result)
 {
-    if (eo->data_fd && eo->use_raw_io) {
-        ebpf_write_data(eo);
-    }
-    ebpf_load_program(eo);
+    /* DMA program */
+    ebpf_dma_program(eo);
+
+    /* DMA data */
+    ebpf_dma_data(eo);
+
+    /* Run program */
     for (int i = 0; i < eo->chunks; i++) {
-        if (eo->data_fd) {
-            ebpf_load_data(eo, i * eo->chunk_size);
-        }
-        int res = ebpf_execute(eo);
+        int res = ebpf_execute(eo, i * eo->chunk_size);
         if (result)
             result[i] = res;
     }
