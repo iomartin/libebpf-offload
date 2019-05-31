@@ -51,9 +51,9 @@ struct ebpf_offload {
 #define EBPF_CTRL_START     0x1
 #define EBPF_CTRL_DMA_DONE  0x4
 
-#define EBPF_TEXT_LEN_OFFSET    0x0
-#define EBPF_MEM_LEN_OFFSET     0x4
-#define EBPF_TEXT_OFFSET        0x1000
+#define EBPF_TEXT_LEN_OFFSET    0x100000
+#define EBPF_MEM_LEN_OFFSET     0x100004
+#define EBPF_TEXT_OFFSET        0x100100
 #define EBPF_RET_OFFSET         0x200000
 #define EBPF_READY_OFFSET       0x200004
 #define EBPF_REGS_OFFSET        0x200008

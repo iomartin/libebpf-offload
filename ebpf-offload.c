@@ -166,23 +166,33 @@ int ebpf_send_command(struct ebpf_offload *eo, char opcode, uint32_t length, uin
     return res;
 }
 
-static void ebpf_dma_program(struct ebpf_offload *eo)
+static int ebpf_dma_program(struct ebpf_offload *eo)
 {
     /* Get program size */
     int prog_size = lseek(eo->prog_fd, 0, SEEK_END);;
     lseek(eo->prog_fd, 0, SEEK_SET);
 
     void *prog_addr = mmap(NULL, prog_size, PROT_READ, MAP_SHARED, eo->prog_fd, 0);
+    if (prog_addr == MAP_FAILED) {
+        fprintf(stderr, "mmap() failed when trying to DMA program");
+        return 1;
+    }
     ebpf_send_command(eo, EBPF_OFFLOAD_OPCODE_DMA_TEXT, prog_size, (uint64_t) prog_addr);
     munmap(prog_addr, prog_size);
+    return 0;
 }
 
-static void ebpf_dma_data(struct ebpf_offload *eo)
+static int ebpf_dma_data(struct ebpf_offload *eo)
 {
     int data_size = eo->chunks * eo->chunk_size;
     void *data_addr = mmap(NULL, data_size, PROT_READ, MAP_SHARED, eo->data_fd, 0);
+    if (data_addr == MAP_FAILED) {
+        fprintf(stderr, "mmap() failed when trying to DMA data");
+        return 1;
+    }
     ebpf_send_command(eo, EBPF_OFFLOAD_OPCODE_DMA_DATA, data_size, (uint64_t) data_addr);
     munmap(data_addr, data_size);
+    return 0;
 }
 
 static int ebpf_execute(struct ebpf_offload *eo, uint64_t offset)
