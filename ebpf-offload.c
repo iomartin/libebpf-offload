@@ -117,7 +117,7 @@ int ebpf_init(struct ebpf_offload *eo)
         fprintf(stderr, "NVMe device not initialized.");
         return 1;
     }
-    if (eo->p2pmem_fd == 0) {
+    if (eo->p2pmem_filename && eo->p2pmem_fd == 0) {
         fprintf(stderr, "p2pmem device not initialized.");
         return 1;
     }
@@ -138,12 +138,14 @@ int ebpf_init(struct ebpf_offload *eo)
         return 1;
     }
 
-    eo->p2pmem_size = eo->chunk_size * eo->chunks;
-    eo->p2pmem_buffer = mmap(NULL, eo->p2pmem_size, PROT_READ | PROT_WRITE,
-            MAP_SHARED, eo->p2pmem_fd, 0);
-    if (eo->p2pmem_buffer == MAP_FAILED) {
-        perror("mmap (p2pmem_buffer)");
-        return 1;
+    if (eo->p2pmem_filename) {
+        eo->p2pmem_size = eo->chunk_size * eo->chunks;
+        eo->p2pmem_buffer = mmap(NULL, eo->p2pmem_size, PROT_READ | PROT_WRITE,
+                MAP_SHARED, eo->p2pmem_fd, 0);
+        if (eo->p2pmem_buffer == MAP_FAILED) {
+            perror("mmap (p2pmem_buffer)");
+            return 1;
+        }
     }
     eo->ebpf_buffer = mmap(NULL, eo->ebpf_size, PROT_READ | PROT_WRITE, MAP_SHARED, eo->ebpf_fd, 0);
     if (eo->ebpf_buffer == MAP_FAILED) {
